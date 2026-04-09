@@ -95,3 +95,182 @@ for date in unique_dates:
         dst.write(grid.astype('float32'), 1)
 
 print("✅ All predicted SMDI TIFFs saved (no clipping).")
+
+
+#Predicted monthly TIF to yearly Combined 
+
+import os
+import re
+import numpy as np
+import rasterio
+from rasterio.transform import from_origin
+import glob
+
+# --- Paths ---
+input_dir = r"E:\F_Data\1.All Picture&Graph for Project\DFNN\Update result 2\Predicted tif"
+output_dir = r"E:\F_Data\1.All Picture&Graph for Project\DFNN\Update result 2\Predicted tif\CombainedYears"
+
+# --- Create output directory if it doesn't exist ---
+os.makedirs(output_dir, exist_ok=True)
+
+# --- List all TIFF files ---
+tiff_files = sorted(glob.glob(os.path.join(input_dir, "Predicted_SMDI_*.tif")))
+
+# --- Define years ---
+years = range(2001, 2021)  # 2001 to 2020 inclusive
+
+# --- Function to combine TIFFs and calculate mean for a given year ---
+def combine_yearly_tiff(year):
+    # Identify files for the given year and months (April to October)
+    pattern = re.compile(rf"Predicted_SMDI_{year}_(0[4-9]|10)\.tif$")
+    year_files = [f for f in tiff_files if pattern.search(os.path.basename(f))]
+    
+    # Check if files exist for the year
+    if not year_files:
+        print(f"No files found for year {year}")
+        return
+    
+    # Load and check shapes of all monthly TIFFs
+    stacks = []
+    first_shape = None
+    for tif_path in year_files:
+        with rasterio.open(tif_path) as src:
+            data = src.read(1)
+            shape = data.shape
+            if first_shape is None:
+                first_shape = shape
+                print(f"Reference shape for year {year}: {first_shape}")
+            elif shape != first_shape:
+                print(f"Shape mismatch in {os.path.basename(tif_path)}: {shape} vs {first_shape}")
+            stacks.append(data)
+    
+    # Convert to numpy array with alignment check
+    try:
+        stack = np.array(stacks)
+    except ValueError as e:
+        print(f"Error stacking arrays for year {year}: {e}")
+        # Attempt to resample to common shape if mismatch
+        aligned_stacks = []
+        with rasterio.open(year_files[0]) as ref:
+            for tif_path in year_files:
+                with rasterio.open(tif_path) as src:
+                    # Resample to reference shape if needed (simple nearest neighbor)
+                    data = src.read(1, out_shape=first_shape, resampling=rasterio.enums.Resampling.nearest)
+                    aligned_stacks.append(data)
+        stack = np.array(aligned_stacks)
+        print(f"Resampled to common shape: {first_shape} for year {year}")
+    
+    # Calculate mean across months, handling NA values
+    mean_grid = np.nanmean(stack, axis=0)
+    smdi_mean = np.nanmean(mean_grid)  # Overall mean SMDI for the year
+    print(f"Year: {year}, SMDI Mean: {smdi_mean}, Min: {np.nanmin(mean_grid)}, Max: {np.nanmax(mean_grid)}")
+    
+    # Use the first file's metadata for output
+    with rasterio.open(year_files[0]) as first_tif:
+        transform = first_tif.transform
+        crs = first_tif.crs
+        height, width = first_tif.shape
+    
+    # Define output file name
+    output_file = os.path.join(output_dir, f"Combined_SMDI_{year}_Apr-Oct.tif")
+    
+    # Write yearly mean GeoTIFF
+    with rasterio.open(
+        output_file,
+        'w',
+        driver='GTiff',
+        height=height,
+        width=width,
+        count=1,
+        dtype='float32',
+        crs=crs,
+        transform=transform,
+        nodata=np.nan,
+        compress='lzw'
+    ) as dst:
+        dst.write(mean_grid.astype('float32'), 1)
+    
+    print(f"Combined TIFF created for year {year}: {output_file}")
+
+# --- Loop through each year and combine TIFFs ---
+for year in years:
+    combine_yearly_tiff(year)
+
+
+## Predicted tif to Color Classification tif ##
+
+# --- INPUT PATHS ---
+tif_dir = r"E:\F_Data\1.All Picture&Graph for Project\DFNN\Update result\Predicted tif"
+shapefile_path = r"E:\Ningxia hui shp\Ningxia_Hui.shp"
+
+# --- OUTPUT PATH ---
+output_dir = r"E:\F_Data\1.All Picture&Graph for Project\DFNN\Update result\Color Classification tif\png"
+os.makedirs(output_dir, exist_ok=True)
+
+# --- Drought Classification Ranges ---
+drought_ranges = {
+    'Extreme Drought': (-4, -3, '#67001f'),
+    'Severe Drought': (-3, -2, '#b2182b'),
+    'Moderate Drought': (-2, -1, '#ef8a62'),
+    'Mild Drought / Near Normal': (-1, 0, '#fddbc7'),
+    'Normal to Wet': (0, 1, '#d1e5f0'),
+    'Moderately Wet': (1, 2, '#67a9cf'),
+    'Very Wet': (2, 3, '#2166ac'),
+    'Extremely Wet': (3, 4, '#053061'),
+}
+
+# --- Prepare drought class limits and colors ---
+classes = list(drought_ranges.keys())
+limits = [v[:2] for v in drought_ranges.values()]
+colors = [v[2] for v in drought_ranges.values()]
+
+# --- Load shapefile ---
+shapefile = gpd.read_file(shapefile_path)
+shapefile = shapefile.to_crs("EPSG:32648")  # UTM Zone 48N (if needed)
+geom = [feature["geometry"] for feature in shapefile.__geo_interface__["features"]]
+
+# --- Target years and months ---
+years = [2004, 2011, 2013]
+months = list(range(4, 10))  # April to October
+
+# --- Create plots ---
+for year in years:
+    for month in months:
+        date_str = f"{year}_{month:02d}"
+        tif_file = os.path.join(tif_dir, f"Predicted_SMDI_{date_str}.tif")
+
+        if not os.path.exists(tif_file):
+            print(f"Missing: {tif_file}")
+            continue
+
+        with rasterio.open(tif_file) as src:
+            out_image, out_transform = mask(src, geom, crop=True)
+            out_meta = src.meta.copy()
+
+        data = out_image[0]
+        data = np.ma.masked_where(np.isnan(data), data)
+
+        # --- Create classification map ---
+        fig, ax = plt.subplots(figsize=(8, 6))
+
+        # Reclassify with color map
+        cmap = plt.matplotlib.colors.ListedColormap(colors)
+        bounds = [v[0] for v in limits] + [limits[-1][1]]
+        norm = plt.matplotlib.colors.BoundaryNorm(bounds, cmap.N)
+
+        im = ax.imshow(data, cmap=cmap, norm=norm)
+        ax.set_title(f"{year} {calendar.month_name[month]}", fontsize=14)
+        ax.axis('off')
+
+        # Add colorbar with label ONLY ONCE (first image)
+        if year == 2004 and month == 4:
+            cbar = fig.colorbar(im, ax=ax, orientation='vertical', ticks=bounds)
+            cbar.set_label('SMDI Drought Classes', fontsize=12)
+
+        # Save image
+        output_name = f"{year}_{calendar.month_name[month]}.png"
+        output_path = os.path.join(output_dir, output_name)
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+print("✅ Drought classification maps created successfully.")
