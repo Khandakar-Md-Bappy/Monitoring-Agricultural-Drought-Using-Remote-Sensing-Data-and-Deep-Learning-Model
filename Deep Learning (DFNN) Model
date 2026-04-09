@@ -176,3 +176,61 @@ plt.xlabel('Epoch')
 plt.legend()
 plt.savefig('training_history_mse.png', dpi=300)
 plt.show()
+
+
+## Relative Importance of Features for DFNN ##
+
+import shap
+from tensorflow.keras.models import load_model
+import json
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+import tensorflow as tf
+
+# Assumes X_test, y_test, features are already defined
+
+# 🔁 Reload trained model
+print("\n🔍 Loading trained DFNN model...")
+loaded_model = load_model("Msc_Project_All/dfnn_final1_model_fold5.keras")
+
+# 🔍 Calculate Permutation-Based Relative Importance
+print("\n🔍 Calculating Permutation-Based Relative Importance")
+baseline_pred = loaded_model.predict(X_test, verbose=0).flatten()
+baseline_mse = mean_squared_error(y_test, baseline_pred)
+
+importance_scores = []
+for i, feature in enumerate(features):
+    X_test_permuted = X_test.copy()
+    np.random.shuffle(X_test_permuted[:, i])
+    permuted_pred = loaded_model.predict(X_test_permuted, verbose=0).flatten()
+    permuted_mse = mean_squared_error(y_test, permuted_pred)
+    importance = permuted_mse - baseline_mse
+    importance_scores.append(importance)
+
+# Normalize importance scores
+total_importance = sum(importance_scores)
+relative_importance = [(score / total_importance) * 100 for score in importance_scores]
+
+# Sort by importance descending
+sorted_indices = np.argsort(relative_importance)[::-1]
+sorted_features = [features[i] for i in sorted_indices]
+sorted_importance = [relative_importance[i] for i in sorted_indices]
+
+# 📊 Bar Plot of Permutation Importance (Sorted)
+plt.figure(figsize=(10, 6))
+sns.barplot(x=sorted_importance, y=sorted_features, palette='viridis')
+plt.title('Relative Importance of Features for DFNN', fontsize=14)
+plt.xlabel('Relative Importance (%)')
+plt.ylabel('Impact Factors')
+plt.tight_layout()
+plt.savefig('DFNN_feature_importance_sorted.png', dpi=300)
+plt.show()
+
+# Save to JSON
+model_info['feature_importance'] = {
+    'features': sorted_features,
+    'relative_importance': sorted_importance
+}
+with open('model_metrics.json', 'w') as f:
+    json.dump(model_info, f, indent=4)
