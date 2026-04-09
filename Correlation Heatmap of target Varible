@@ -1,0 +1,48 @@
+## Correlation Heatmap ##
+
+pip install rasterio numpy scipy
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Define the path and columns
+csv_path = "E:/F_Data/Experiment_1/7.Growing season month/1. CSV_File/Combined_Growing.csv"
+drought_vars = ['SMDI', 'EDI', 'PAI', 'PCI', 'SPEI3', 'SPEI6', 'SPEI12', 
+                'SPI3', 'SPI6', 'SPI12', 'TCI', 'VCI', 'VHI']  # Reordered with SMDI first
+sample_size = 50000  # Target sample size
+
+# Estimate total rows (adjust this if you know the approximate row count)
+approx_total_rows = 1000000  # Placeholder; replace with actual row count if known
+skip_prob = sample_size / approx_total_rows
+
+# Load a random sample of the data
+np.random.seed(42)  # For reproducibility
+df = pd.read_csv(csv_path, usecols=drought_vars, 
+                 skiprows=lambda x: x > 0 and np.random.uniform() > skip_prob)
+
+# If more or fewer rows are loaded, adjust to exactly 50,000 if possible
+if len(df) > sample_size:
+    df = df.sample(n=sample_size, random_state=42)
+elif len(df) < sample_size:
+    print(f"Warning: Only {len(df)} rows loaded. Consider increasing approx_total_rows.")
+
+# Drop missing values and optimize memory with float32
+df = df.dropna().astype('float32')
+
+# Compute correlation matrix with specified order
+correlation_matrix = df[drought_vars].corr(method='pearson')  # Ensure order with drought_vars
+
+# Plot correlation heatmap
+plt.figure(figsize=(12, 10))
+sns.heatmap(correlation_matrix, annot=True, fmt=".2f", cmap="RdYlBu", 
+            vmin=-1, vmax=1, center=0,  # Set colorbar range from -1 to +1
+            linewidths=0.5, square=True, cbar_kws={"shrink": .75})
+
+plt.title(f"Correlation Heatmap of SMDI", fontsize=14)
+plt.xticks(rotation=45, ha='right')
+plt.yticks(rotation=0)
+plt.tight_layout()
+
+# Show the plot
+plt.show()
