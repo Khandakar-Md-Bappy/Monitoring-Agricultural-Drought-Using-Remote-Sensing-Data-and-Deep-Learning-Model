@@ -1,0 +1,97 @@
+pip install pandas numpy scikit-learn tensorflow rasterio tqdm
+
+import os
+import numpy as np
+import pandas as pd
+import rasterio
+from rasterio.transform import from_origin
+from tensorflow.keras.models import load_model
+
+# --- Paths ---
+model_path = r"E:\F_Data\1.All Picture&Graph for Project\DFNN\Updated result 2\Letestfold5.keras"
+csv_path = r"E:\F_Data\Experiment_1\7.Growing season month\1. CSV_File\Combined_Growing.csv"
+output_dir = r"E:\F_Data\1.All Picture&Graph for Project\DFNN\Update result 2\Predicted tif"
+
+# --- Load model ---
+model = load_model(model_path, compile=False)
+
+# --- Load data ---
+df = pd.read_csv(csv_path)
+df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m')
+df = df.dropna()
+
+# --- Separate coordinates and predictors ---
+X_pred = df.drop(columns=['X', 'Y', 'Date', 'SMDI'])
+
+# --- Predict using DFNN ---
+predicted_smdi = model.predict(X_pred, batch_size=32)  # Use smaller batch size to reduce memory
+df['Predicted_SMDI'] = predicted_smdi
+print(f"Raw Predictions - Min: {predicted_smdi.min()}, Max: {predicted_smdi.max()}, Mean: {predicted_smdi.mean()}")
+
+# --- Create output directory if it doesn't exist ---
+os.makedirs(output_dir, exist_ok=True)
+
+# --- Process each month (with memory optimization) ---
+unique_dates = df['Date'].unique()
+
+for date in unique_dates:
+    subset = df[df['Date'] == date]
+    if subset.empty:
+        continue
+
+    xs = np.sort(subset['X'].unique())
+    ys = np.sort(subset['Y'].unique())[::-1]  # descending Y
+
+    # Debug: Check grid dimensions
+    width, height = len(xs), len(ys)
+    print(f"Date: {date.strftime('%Y-%m')}, Grid Size: {width}x{height} ({width * height} elements)")
+
+    # Initialize grid with float32 to save memory
+    grid = np.full((height, width), np.nan, dtype=np.float32)
+
+    # Build index maps
+    x_to_idx = {x: i for i, x in enumerate(xs)}
+    y_to_idx = {y: i for i, y in enumerate(ys)}
+
+    # Fill grid with raw predictions
+    for _, row in subset.iterrows():
+        x_idx = x_to_idx[row['X']]
+        y_idx = y_to_idx[row['Y']]
+        val = row['Predicted_SMDI']
+
+        if np.isnan(val) or val < -10 or val > 10:
+            grid[y_idx, x_idx] = np.nan
+        else:
+            grid[y_idx, x_idx] = val
+
+    # Debug: Print grid statistics
+    grid_mean = np.nanmean(grid)
+    grid_min = np.nanmin(grid)
+    grid_max = np.nanmax(grid)
+    print(f"Date: {date.strftime('%Y-%m')}, Grid Mean: {grid_mean}, Min: {grid_min}, Max: {grid_max}")
+
+    # Calculate transform
+    pixel_size_x = abs(xs[1] - xs[0]) if len(xs) > 1 else 1
+    pixel_size_y = abs(ys[1] - ys[0]) if len(ys) > 1 else 1
+    transform = from_origin(min(xs), max(ys), pixel_size_x, pixel_size_y)
+
+    # Output path
+    output_path = os.path.join(output_dir, f"Predicted_SMDI_{date.strftime('%Y_%m')}.tif")
+
+    # Write GeoTIFF
+    with rasterio.open(
+        output_path,
+        'w',
+        driver='GTiff',
+        height=grid.shape[0],
+        width=grid.shape[1],
+        count=1,
+        dtype='float32',
+        crs='+proj=utm +zone=48 +datum=WGS84',
+        transform=transform,
+        nodata=np.nan,
+        compress='lzw'
+    ) as dst:
+        dst.write(grid.astype('float32'), 1)
+
+print("✅ All predicted SMDI TIFFs saved (no clipping).")
