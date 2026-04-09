@@ -230,7 +230,7 @@ shapefile = shapefile.to_crs("EPSG:32648")  # UTM Zone 48N (if needed)
 geom = [feature["geometry"] for feature in shapefile.__geo_interface__["features"]]
 
 # --- Target years and months ---
-years = [2004, 2011, 2013]
+years = [" "]
 months = list(range(4, 10))  # April to October
 
 # --- Create plots ---
